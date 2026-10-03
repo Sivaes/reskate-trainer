@@ -1,5 +1,5 @@
 # ReSkate
-
+Download the trainer here https://github.com/andrewnakas/reskate-trainer/releases
 play it offline, host your own lobbies and dedicated servers, and mod it.
 the launcher, the runtime that loads into the game, and the dedicated server.
 
