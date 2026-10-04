@@ -263,9 +263,13 @@ void presets_tab(SkateMenu &menu, const Model &model, const CallbacksV3 &callbac
         const auto &debug = model.debug;
         begin_card(menu, "dark-pop", "DARK POP", "Hold D-pad Right as a flip trick lands");
         bool dark_on = debug.dark_pop;
-        if (toggle_row(menu, "Dark pop", "Flip trick, then hold D-pad Right on the way down. When you would land, the game pops you again. Turns on Never bail.",
+        if (toggle_row(menu, "Dark pop", "Flip trick holding RB, then hold D-pad Right on the way down. When you would land, the game pops you again. Works with Never bail on or off.",
                 dark_on, callbacks.queue_debug != nullptr))
             debug_request(menu, callbacks, {DebugAction::set_dark_pop_enabled, dark_on});
+        bool dark_catch = debug.dark_pop_catch;
+        if (toggle_row(menu, "Needs RB (the catch)", "Only pop when RB was held in the last 2.5 seconds, so riding with D-pad Right never pops you.",
+                dark_catch, callbacks.queue_debug != nullptr))
+            debug_request(menu, callbacks, {DebugAction::set_dark_pop_catch, dark_catch});
         ImGui::BeginDisabled(callbacks.queue_debug == nullptr);
         field(menu, "Extra pop");
         float dark_strength = debug.dark_pop_strength;

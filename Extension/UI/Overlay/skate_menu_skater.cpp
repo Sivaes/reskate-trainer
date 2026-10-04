@@ -135,8 +135,12 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
     float dark_strength = debug.dark_pop_strength;
     if (ImGui::SliderFloat("##dark-pop-strength", &dark_strength, 0.0f, 25.0f, "+%.1f m/s", ImGuiSliderFlags_AlwaysClamp))
         debug_request(menu, callbacks, {DebugAction::set_dark_pop_strength, false, dark_strength});
+    bool dark_catch = debug.dark_pop_catch;
+    if (toggle_row(menu, "Dark Pop needs RB", "Only pop when RB (the catch) was held in the last 2.5 seconds, so riding with D-pad Right never pops you.",
+            dark_catch, callbacks.queue_debug != nullptr))
+        debug_request(menu, callbacks, {DebugAction::set_dark_pop_catch, dark_catch});
     bool dark_pop = debug.dark_pop;
-    if (toggle_row(menu, "Dark Pop", "Hold D-pad Right as a flip trick lands to pop again off the ground. Turns on No Bail.",
+    if (toggle_row(menu, "Dark Pop", "Hold RB for the catch, then D-pad Right as a flip trick lands, to pop again off the ground. Works with No Bail on or off.",
             dark_pop, callbacks.queue_debug != nullptr))
         debug_request(menu, callbacks, {DebugAction::set_dark_pop_enabled, dark_pop});
     bool revert_boost = debug.revert_boost;

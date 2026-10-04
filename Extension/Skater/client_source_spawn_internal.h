@@ -138,6 +138,8 @@ struct InteractiveDebug {
     bool dark_pop{};
     float dark_pop_strength{}; // extra upward speed, m/s, queued as an Up Boost after the pop
     std::uint64_t dark_pop_count{}, dark_pop_seen{};
+    bool dark_pop_catch{true}, dark_pop_report{};
+    ULONGLONG dark_pop_fired_at{};
     struct RevertTrack {
         bool airborne{};
         float yaw{}, spin{}; // radians: last facing, and the turn accumulated this jump

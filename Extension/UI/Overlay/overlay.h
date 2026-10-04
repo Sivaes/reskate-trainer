@@ -71,6 +71,7 @@ enum class DebugAction {
     set_revert_boost_speed,
     set_dark_pop_enabled,
     set_dark_pop_strength,
+    set_dark_pop_catch,
     // Keep the last action in sync with the bound in request_scheduler.h.
 };
 
@@ -125,6 +126,7 @@ struct DebugModel {
     // Dark Pop: D-pad Right held as a flight ends makes the game pop again (see no_bail.cpp).
     bool dark_pop = false;
     float dark_pop_strength = 0.0f; // extra upward m/s after the pop
+    bool dark_pop_catch = true;     // a pop also needs RB held (the catch) within the last 2.5 s
     std::uint64_t dark_pop_count = 0;
     bool camera_position_valid = false;
     bool skater_position_valid = false;

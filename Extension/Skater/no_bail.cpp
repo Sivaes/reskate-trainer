@@ -104,6 +104,27 @@ bool resolve(std::uintptr_t client, std::uintptr_t entity, Owner& o) noexcept {
     o.entity = entity;
     return true;
 }
+// Dark Pop state, shared by the selector hook and the client tick (see dark_pop_override).
+struct DarkPop {
+    std::atomic<bool> enabled{}, require_catch{true};
+    std::atomic<std::uint64_t> held_until{}, catch_until{}, cooldown_until{}, hold_until{}, protect_until{}, count{}, hold_ticks{};
+    std::atomic<std::uint32_t> from{}, to{};
+};
+DarkPop& dark_pop() { static auto* value = new DarkPop; return *value; }
+// The local skater this process published (even with No Bail off: the lease keeps its owner), checked
+// against the live game objects. Says nothing about whether protection is on.
+bool local_owner(std::uintptr_t object, std::uintptr_t Owner::* member, Owner* owner = nullptr) noexcept {
+    auto& p = protection();
+    if (!p.ready.load(std::memory_order_acquire)) return false;
+    AcquireSRWLockShared(&p.lock);
+    const auto lease = p.lease;
+    ReleaseSRWLockShared(&p.lock);
+    if (!lease.owner.entity || !object || object != lease.owner.*member) return false;
+    Owner current;
+    if (!resolve(lease.owner.client, lease.owner.entity, current) || current != lease.owner) return false;
+    if (owner) *owner = current;
+    return true;
+}
 bool protected_owner(std::uintptr_t object, std::uintptr_t Owner::* member, Owner* owner = nullptr) noexcept {
     auto& p = protection();
     if (!p.ready.load(std::memory_order_acquire)) return false;
@@ -112,7 +133,10 @@ bool protected_owner(std::uintptr_t object, std::uintptr_t Owner::* member, Owne
     AcquireSRWLockShared(&p.lock);
     const auto lease = p.lease;
     ReleaseSRWLockShared(&p.lock);
-    if (!lease.active(GetTickCount64()) || object != lease.owner.*member) return false;
+    const auto now = GetTickCount64();
+    // No Bail on, or a Dark Pop under way: for the moment of a pop the skater is protected from the
+    // bail the landing would have caused, as No Bail does, whether or not No Bail is switched on.
+    if ((!lease.active(now) && now >= dark_pop().protect_until.load(std::memory_order_relaxed)) || object != lease.owner.*member) return false;
     Owner current;
     if (!resolve(lease.owner.client, lease.owner.entity, current) || current != lease.owner) return false;
     if (owner) *owner = current;
@@ -185,12 +209,6 @@ void hold_off_board(std::uintptr_t selector, std::uint32_t current) noexcept {
     (void)cancel_request(current_owner.context, animation_request_offset, mount_request_mask);
 }
 constexpr std::uint32_t dark_pop_state = 200;
-struct DarkPop {
-    std::atomic<bool> enabled{};
-    std::atomic<std::uint64_t> held_until{}, cooldown_until{}, count{};
-    std::atomic<std::uint32_t> from{}, to{};
-};
-DarkPop& dark_pop() { static auto* value = new DarkPop; return *value; }
 // `wanted` is what the game chose and `kept` what No Bail would keep of it. The result is the pop
 // state when a held press meets the end of a flight, and `kept` otherwise.
 std::uint32_t dark_pop_override(std::uintptr_t selector, std::uint32_t current, std::uint32_t wanted, std::uint32_t kept) noexcept {
@@ -200,9 +218,24 @@ std::uint32_t dark_pop_override(std::uintptr_t selector, std::uint32_t current, 
     const bool stays_air = wanted >= 200 && wanted < 300;
     if (!was_air || stays_air) return kept;
     const auto now = GetTickCount64();
+    // A pop already under way: the game asks to leave the air again on the next ticks (the contact that
+    // ended the flight is still there), so keep it in the air state it is in for a moment.
+    if (now < d.hold_until.load(std::memory_order_relaxed)) {
+        if (!local_owner(selector, &Owner::selector)) return kept;
+        d.hold_ticks.fetch_add(1, std::memory_order_relaxed);
+        return current;
+    }
     if (now >= d.held_until.load(std::memory_order_relaxed) || now < d.cooldown_until.load(std::memory_order_relaxed)) return kept;
-    if (!protected_owner(selector, &Owner::selector)) return kept;
-    d.cooldown_until.store(now + 1000, std::memory_order_relaxed);
+    if (d.require_catch.load(std::memory_order_relaxed) && now >= d.catch_until.load(std::memory_order_relaxed)) return kept;
+    Owner owner;
+    if (!local_owner(selector, &Owner::selector, &owner)) return kept;
+    // Protect from the bail this landing raised: now, and for the pop plus a moment after it.
+    d.protect_until.store(now + 600, std::memory_order_relaxed);
+    (void)cancel_wipeout_requests(owner.context);
+    (void)reset_pending_causes(owner.causes);
+    d.hold_until.store(now + 160, std::memory_order_relaxed);
+    d.hold_ticks.store(0, std::memory_order_relaxed);
+    d.cooldown_until.store(now + 1200, std::memory_order_relaxed);
     d.from.store(current, std::memory_order_relaxed);
     d.to.store(wanted, std::memory_order_relaxed);
     d.count.fetch_add(1, std::memory_order_acq_rel);
@@ -411,14 +444,18 @@ void clear_no_bail() noexcept {
     p.lease = {};
     ReleaseSRWLockExclusive(&p.lock);
 }
-void dark_pop_update(bool enabled, bool held) noexcept {
+void dark_pop_update(bool enabled, bool held, bool catching, bool require_catch) noexcept {
     auto& d = dark_pop();
     d.enabled.store(enabled, std::memory_order_relaxed);
-    if (enabled && held) d.held_until.store(GetTickCount64() + 150, std::memory_order_relaxed);
+    d.require_catch.store(require_catch, std::memory_order_relaxed);
+    const auto now = GetTickCount64();
+    if (enabled && held) d.held_until.store(now + 150, std::memory_order_relaxed);
+    if (enabled && catching) d.catch_until.store(now + 2500, std::memory_order_relaxed);
 }
 DarkPopLast dark_pop_last() noexcept {
     auto& d = dark_pop();
-    return {d.count.load(std::memory_order_acquire), d.from.load(std::memory_order_relaxed), d.to.load(std::memory_order_relaxed)};
+    return {d.count.load(std::memory_order_acquire), d.hold_ticks.load(std::memory_order_relaxed),
+            d.from.load(std::memory_order_relaxed), d.to.load(std::memory_order_relaxed)};
 }
 void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept {
     auto& w = state_watch();
