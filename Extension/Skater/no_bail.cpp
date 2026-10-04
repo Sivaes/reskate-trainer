@@ -184,6 +184,30 @@ void hold_off_board(std::uintptr_t selector, std::uint32_t current) noexcept {
     if (!resolve(board.owner.client, board.owner.entity, current_owner) || current_owner != board.owner) return;
     (void)cancel_request(current_owner.context, animation_request_offset, mount_request_mask);
 }
+constexpr std::uint32_t dark_pop_state = 200;
+struct DarkPop {
+    std::atomic<bool> enabled{};
+    std::atomic<std::uint64_t> held_until{}, cooldown_until{}, count{};
+    std::atomic<std::uint32_t> from{}, to{};
+};
+DarkPop& dark_pop() { static auto* value = new DarkPop; return *value; }
+// `wanted` is what the game chose and `kept` what No Bail would keep of it. The result is the pop
+// state when a held press meets the end of a flight, and `kept` otherwise.
+std::uint32_t dark_pop_override(std::uintptr_t selector, std::uint32_t current, std::uint32_t wanted, std::uint32_t kept) noexcept {
+    auto& d = dark_pop();
+    if (!d.enabled.load(std::memory_order_relaxed)) return kept;
+    const bool was_air = current >= 200 && current < 300;
+    const bool stays_air = wanted >= 200 && wanted < 300;
+    if (!was_air || stays_air) return kept;
+    const auto now = GetTickCount64();
+    if (now >= d.held_until.load(std::memory_order_relaxed) || now < d.cooldown_until.load(std::memory_order_relaxed)) return kept;
+    if (!protected_owner(selector, &Owner::selector)) return kept;
+    d.cooldown_until.store(now + 1000, std::memory_order_relaxed);
+    d.from.store(current, std::memory_order_relaxed);
+    d.to.store(wanted, std::memory_order_relaxed);
+    d.count.fetch_add(1, std::memory_order_acq_rel);
+    return dark_pop_state;
+}
 std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     {
         LastError error;
@@ -195,7 +219,8 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     const bool filtered = filter_requests(selector, &Owner::selector);
     const auto next = protection().choose_original(selector, current);
     LastError error;
-    const auto chosen = filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
+    const auto kept = filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
+    const auto chosen = dark_pop_override(selector, current, next, kept);
     auto& w = state_watch();
     if (selector == w.selector.load(std::memory_order_acquire) && GetTickCount64() < w.until.load(std::memory_order_acquire)) {
         if (w.state.exchange(chosen, std::memory_order_acq_rel) != chosen) {
@@ -385,6 +410,15 @@ void clear_no_bail() noexcept {
     AcquireSRWLockExclusive(&p.lock);
     p.lease = {};
     ReleaseSRWLockExclusive(&p.lock);
+}
+void dark_pop_update(bool enabled, bool held) noexcept {
+    auto& d = dark_pop();
+    d.enabled.store(enabled, std::memory_order_relaxed);
+    if (enabled && held) d.held_until.store(GetTickCount64() + 150, std::memory_order_relaxed);
+}
+DarkPopLast dark_pop_last() noexcept {
+    auto& d = dark_pop();
+    return {d.count.load(std::memory_order_acquire), d.from.load(std::memory_order_relaxed), d.to.load(std::memory_order_relaxed)};
 }
 void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept {
     auto& w = state_watch();

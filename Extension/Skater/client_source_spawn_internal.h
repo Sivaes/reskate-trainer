@@ -135,6 +135,9 @@ struct InteractiveDebug {
     bool revert_boost{};
     float revert_boost_speed = 2.0f; // metres per second added along the direction of travel
     std::uint64_t revert_boost_count{};
+    bool dark_pop{};
+    float dark_pop_strength{}; // extra upward speed, m/s, queued as an Up Boost after the pop
+    std::uint64_t dark_pop_count{}, dark_pop_seen{};
     struct RevertTrack {
         bool airborne{};
         float yaw{}, spin{}; // radians: last facing, and the turn accumulated this jump

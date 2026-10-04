@@ -69,6 +69,8 @@ enum class DebugAction {
     set_free_camera_fov,  // 0 = the game's own FOV
     set_revert_boost_enabled,
     set_revert_boost_speed,
+    set_dark_pop_enabled,
+    set_dark_pop_strength,
     // Keep the last action in sync with the bound in request_scheduler.h.
 };
 
@@ -120,6 +122,10 @@ struct DebugModel {
     bool revert_boost = false;
     float revert_boost_speed = 2.0f;
     std::uint64_t revert_boost_count = 0;
+    // Dark Pop: D-pad Right held as a flight ends makes the game pop again (see no_bail.cpp).
+    bool dark_pop = false;
+    float dark_pop_strength = 0.0f; // extra upward m/s after the pop
+    std::uint64_t dark_pop_count = 0;
     bool camera_position_valid = false;
     bool skater_position_valid = false;
     std::array<float, 3> camera_position{};

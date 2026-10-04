@@ -23,6 +23,15 @@ struct PhysicsStateWatch {
 };
 void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept;
 PhysicsStateWatch watched_physics_state() noexcept;
+// Dark Pop: while enabled and `held`, the moment the local skater's flight would end (the selector
+// leaves the air states 200-299) it chooses the pop state (200) instead, once per second at most.
+// Needs the No Bail lease to be active (it identifies the local skater). Client tick only.
+void dark_pop_update(bool enabled, bool held) noexcept;
+struct DarkPopLast {
+    std::uint64_t count{}; // pops forced since the process started
+    std::uint32_t from{}, to{}; // the air state it left and the state the game wanted
+};
+DarkPopLast dark_pop_last() noexcept;
 // Stopping flight must not discard the independent manual preference.
 void clear_no_bail_flight() noexcept;
 }

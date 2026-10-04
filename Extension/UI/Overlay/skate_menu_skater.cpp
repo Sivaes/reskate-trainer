@@ -131,6 +131,14 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
     if (ImGui::SliderFloat("##revert-boost-speed", &revert_speed, 0.5f, 15.0f, "+%.1f m/s", ImGuiSliderFlags_AlwaysClamp))
         debug_request(menu, callbacks, {DebugAction::set_revert_boost_speed, false, revert_speed});
     ImGui::EndDisabled();
+    field(menu, "Dark Pop extra pop");
+    float dark_strength = debug.dark_pop_strength;
+    if (ImGui::SliderFloat("##dark-pop-strength", &dark_strength, 0.0f, 25.0f, "+%.1f m/s", ImGuiSliderFlags_AlwaysClamp))
+        debug_request(menu, callbacks, {DebugAction::set_dark_pop_strength, false, dark_strength});
+    bool dark_pop = debug.dark_pop;
+    if (toggle_row(menu, "Dark Pop", "Hold D-pad Right as a flip trick lands to pop again off the ground. Turns on No Bail.",
+            dark_pop, callbacks.queue_debug != nullptr))
+        debug_request(menu, callbacks, {DebugAction::set_dark_pop_enabled, dark_pop});
     bool revert_boost = debug.revert_boost;
     if (toggle_row(menu, "Revert Boost", "Adds the speed above each time you land an unfinished spin (an auto revert). Chain them to build speed.",
             revert_boost, callbacks.queue_debug != nullptr))

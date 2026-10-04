@@ -258,6 +258,23 @@ void presets_tab(SkateMenu &menu, const Model &model, const CallbacksV3 &callbac
         note("1 m/s is 3.6 km/h. Reverts boosted so far this session are counted in the log.");
         end_card();
     }
+    {
+        // Dark Pop: the end of a flight becomes a new pop while D-pad Right is held.
+        const auto &debug = model.debug;
+        begin_card(menu, "dark-pop", "DARK POP", "Hold D-pad Right as a flip trick lands");
+        bool dark_on = debug.dark_pop;
+        if (toggle_row(menu, "Dark pop", "Flip trick, then hold D-pad Right on the way down. When you would land, the game pops you again. Turns on Never bail.",
+                dark_on, callbacks.queue_debug != nullptr))
+            debug_request(menu, callbacks, {DebugAction::set_dark_pop_enabled, dark_on});
+        ImGui::BeginDisabled(callbacks.queue_debug == nullptr);
+        field(menu, "Extra pop");
+        float dark_strength = debug.dark_pop_strength;
+        if (ImGui::SliderFloat("##dark-pop-strength", &dark_strength, 0.0f, 25.0f, "+%.1f m/s", ImGuiSliderFlags_AlwaysClamp))
+            debug_request(menu, callbacks, {DebugAction::set_dark_pop_strength, false, dark_strength});
+        ImGui::EndDisabled();
+        note("0 is the game's own pop. Raise it to launch higher. Each pop is written to ReSkate.log as \"Dark Pop:\".");
+        end_card();
+    }
     begin_card(menu, "presets", "PRESETS", "Switch any of them on and off; they stack");
     ImGui::BeginDisabled(!view.ready || !view.editable);
     const float button = ImGui::CalcTextSize("Turn off").x + ImGui::GetStyle().FramePadding.x * 2;

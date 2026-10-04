@@ -12,6 +12,7 @@
 #include "Extension/Profile/local_profile_runtime.h"
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <optional>
 #include <utility>
 
@@ -134,6 +135,33 @@ void revert_boost_tick(InteractiveDebug& debug, std::uintptr_t client, std::uint
             "Revert Boost: landed after {} air ticks, spin {:.0f} deg (remainder {:.0f}), state {}>{}, {:.1f} m/s{}",
             track.air_ticks, spin_degrees, remainder, from_state, physics_state, speed,
             fire ? ", BOOST" : unfinished ? (allowed ? ", no boost (not on ground / cooldown / speed)" : ", off") : "");
+}
+}
+// ---- Dark Pop -----------------------------------------------------------------
+// The selector hook in no_bail.cpp turns the end of a flight into a new pop while D-pad Right is
+// held. This tick only reads the pad, publishes it, and reports (and optionally boosts) each pop.
+namespace {
+constexpr std::uint32_t dpad_right = 0x8;
+void dark_pop_tick(InteractiveDebug& debug, std::uintptr_t client, std::uintptr_t entity,
+    const NoclipBodies& bodies, bool ready) {
+    const bool allowed = debug.dark_pop && ready && session_boosts_allowed() && session_no_bail_allowed() &&
+        !debug.noclip && !debug.park_editor;
+    ControllerInput pad;
+    DingoSDKOverlayReadControllerInput(&pad);
+    const bool held = pad.available && (pad.buttons & dpad_right) != 0;
+    dark_pop_update(allowed, held);
+    const auto last = dark_pop_last();
+    if (last.count == debug.dark_pop_seen) return;
+    debug.dark_pop_seen = last.count;
+    ++debug.dark_pop_count;
+    const bool boost = debug.dark_pop_strength >= 0.5f && source_state().velocity_guard_active.load(std::memory_order_acquire) &&
+        !bodies.offboard && !debug.up_velocity.valid;
+    if (boost)
+        debug.up_velocity = {client, entity, bodies.core, GetTickCount64() + 1000,
+            {0.0f, std::min(debug.dark_pop_strength, 25.0f), 0.0f}, true};
+    logging::log(logging::Level::info, logging::Channel::skater,
+        "Dark Pop: flight ended (state {} -> {}); pop forced{}", last.from, last.to,
+        boost ? std::format(", +{:.1f} m/s up", std::min(debug.dark_pop_strength, 25.0f)) : "");
 }
 }
 std::array<float, 16> debug_skater(std::uintptr_t base, std::uintptr_t client, overlay::DebugModel& model) {
@@ -451,7 +479,8 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         request.action == overlay::DebugAction::set_first_person_fov ||
         request.action == overlay::DebugAction::set_free_camera_fov ||
         (request.action >= overlay::DebugAction::set_first_person_spring && request.action <= overlay::DebugAction::reset_first_person_arm) ||
-        request.action == overlay::DebugAction::set_no_bail,
+        request.action == overlay::DebugAction::set_no_bail || request.action == overlay::DebugAction::set_dark_pop_strength ||
+        (request.action == overlay::DebugAction::set_dark_pop_enabled && !request.enabled),
         "Close Park Editor before changing camera or HUD modes.");
     if (request.action >= overlay::DebugAction::set_first_person_spring &&
         request.action <= overlay::DebugAction::reset_first_person_arm) {
@@ -509,6 +538,19 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         debug.status = up ? "Up Boost speed updated." : "Forward Boost speed updated.";
         return;
     }
+    if (request.action == overlay::DebugAction::set_dark_pop_strength) {
+        source_require(std::isfinite(request.value) && request.value >= 0.0f && request.value <= 25.0f,
+            "Dark Pop extra pop must be between 0 and 25.");
+        debug.dark_pop_strength = request.value;
+        debug.status = "Dark Pop extra pop updated.";
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_enabled && !request.enabled) {
+        debug.dark_pop = false;
+        dark_pop_update(false, false);
+        debug.status = "Dark Pop disabled.";
+        return;
+    }
     if (request.action == overlay::DebugAction::set_revert_boost_enabled) {
         debug.revert_boost = request.enabled;
         debug.revert_track = {};
@@ -534,6 +576,8 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         debug.up_velocity_speed = 20.0f;
         debug.up_velocity.valid = false;
         debug.no_bail = false;
+        debug.dark_pop = false;
+        dark_pop_update(false, false);
         debug_stop_noclip(debug);
         clear_no_bail();
         // Level loads drop temporary modes, never the player's saved choices.
@@ -585,6 +629,19 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         source_require(!boost.valid, "Velocity boost is already queued.");
         boost = {client, skater.skater_identity, bodies.core, GetTickCount64() + 1000, *velocity, true};
         debug.status = up ? "Up Boost queued." : "Forward Boost queued.";
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_enabled) {
+        source_require(session_boosts_allowed(), "The host has turned off boosts in this session.");
+        source_require(session_no_bail_allowed(), "Dark Pop needs No Bail, which the host has turned off in this session.");
+        overlay::DebugModel skater;
+        (void)debug_skater(trial.base, client, skater);
+        source_require(update_no_bail(client, skater.skater_identity, true, debug.noclip && debug.noclip_velocity.valid,
+            debug.noclip_velocity.expires), "Dark Pop needs No Bail, which is unavailable for the current skater.");
+        debug.no_bail = true; // Dark Pop only works with No Bail on: it is how the local skater is identified.
+        debug.dark_pop = true;
+        mark_debug_changed(debug);
+        debug.status = "Dark Pop enabled (No Bail turned on). Hold D-pad Right as your flip trick lands.";
         return;
     }
     if (request.action == overlay::DebugAction::set_no_bail) {
@@ -889,6 +946,8 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         }
         try { revert_boost_tick(debug, client, model.skater_identity, skater_transform, bodies, can_control); }
         catch (...) { debug.revert_track = {}; }
+        try { dark_pop_tick(debug, client, model.skater_identity, bodies, can_control); }
+        catch (...) {}
         model.no_bail_available = can_control && update_no_bail(client, model.skater_identity, debug.no_bail && no_bail_allowed,
             debug.noclip && debug.noclip_velocity.valid, debug.noclip_velocity.expires);
         if (model.camera_available) {
@@ -942,6 +1001,9 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     model.revert_boost = debug.revert_boost;
     model.revert_boost_speed = debug.revert_boost_speed;
     model.revert_boost_count = debug.revert_boost_count;
+    model.dark_pop = debug.dark_pop;
+    model.dark_pop_strength = debug.dark_pop_strength;
+    model.dark_pop_count = debug.dark_pop_count;
     return model;
 }
 bool restore_client_debug(std::uintptr_t base, std::uintptr_t client, bool camera_phase_observed) {
