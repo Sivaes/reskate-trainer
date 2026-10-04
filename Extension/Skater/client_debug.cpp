@@ -158,6 +158,20 @@ void dark_pop_tick(InteractiveDebug& debug, std::uintptr_t client, std::uintptr_
         logging::log(logging::Level::info, logging::Channel::skater,
             "Dark Pop: pop kept in the air for {} physics ticks", last.hold_ticks);
     }
+    if (last.skips != debug.dark_pop_skips_seen) {
+        debug.dark_pop_skips_seen = last.skips;
+        std::string why;
+        const auto add = [&](std::string text) { why += (why.empty() ? "" : "; ") + text; };
+        if (last.skip_why & 1)
+            add(last.skip_ago_ms == ~0ull ? std::string("D-pad Right was not pressed")
+                                         : std::format("D-pad Right not down in time (last down {} ms before)", last.skip_ago_ms));
+        if (last.skip_why & 2) add("a pop just happened (cooldown)");
+        if (last.skip_why & 4) add("clean landing, left alone");
+        if (last.skip_why & 8) add("local skater not identified");
+        if (last.skip_why & 16) add("RB not held");
+        logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop: flight ended (state {} -> {}), no pop: {}",
+            last.skip_from, last.skip_to, why);
+    }
     if (last.count == debug.dark_pop_seen) return;
     debug.dark_pop_seen = last.count;
     debug.dark_pop_fired_at = GetTickCount64();
@@ -555,8 +569,8 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         return;
     }
     if (request.action == overlay::DebugAction::set_dark_pop_catch) {
-        debug.dark_pop_catch = request.enabled;
-        debug.status = request.enabled ? "Dark Pop now needs RB held (the catch)." : "Dark Pop no longer needs RB.";
+        debug.dark_pop_catch = request.enabled; // kept for old callers; there is no menu switch for it any more
+        debug.status = request.enabled ? "Dark Pop now needs RB held." : "Dark Pop no longer needs RB.";
         return;
     }
     if (request.action == overlay::DebugAction::set_dark_pop_enabled && !request.enabled) {
@@ -653,7 +667,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         source_require(session_no_bail_allowed(), "The host has turned off No Bail in this session, and a pop protects you from the landing's bail.");
         source_require(no_bail_available(), "Dark Pop needs the native physics hooks, which are unavailable for this game build.");
         debug.dark_pop = true;
-        debug.status = "Dark Pop enabled. Hold RB for the catch, then D-pad Right as your flip trick lands. No Bail is not needed.";
+        debug.status = "Dark Pop enabled. Hold D-pad Right as you land in the dark catch. No Bail is not needed.";
         logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop enabled (works with No Bail on or off){}",
             dingosdk::reskate_modified_build ? std::format(" (modified build {} {})", dingosdk::reskate_mod_id, dingosdk::reskate_mod_version) : std::string());
         return;

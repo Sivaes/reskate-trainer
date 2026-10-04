@@ -34,6 +34,10 @@ struct DarkPopLast {
     std::uint64_t count{}; // pops forced since the process started
     std::uint64_t hold_ticks{}; // physics ticks the last pop was kept in the air
     std::uint32_t from{}, to{}; // the air state it left and the state the game wanted
+    // The last flight end that was NOT turned into a pop (a bail or a landing with D-pad Right involved):
+    std::uint64_t skips{};
+    std::uint32_t skip_from{}, skip_to{}, skip_why{}; // why: bit 1 not held, 2 cooldown, 4 clean landing, 8 skater unknown, 16 no RB
+    std::uint64_t skip_ago_ms{}; // how long before it D-pad Right was last held (UINT64_MAX: never)
 };
 DarkPopLast dark_pop_last() noexcept;
 // Stopping flight must not discard the independent manual preference.

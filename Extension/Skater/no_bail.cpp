@@ -107,8 +107,10 @@ bool resolve(std::uintptr_t client, std::uintptr_t entity, Owner& o) noexcept {
 // Dark Pop state, shared by the selector hook and the client tick (see dark_pop_override).
 struct DarkPop {
     std::atomic<bool> enabled{}, require_catch{true};
-    std::atomic<std::uint64_t> held_until{}, catch_until{}, cooldown_until{}, hold_until{}, protect_until{}, count{}, hold_ticks{};
+    std::atomic<std::uint64_t> held_until{}, held_at{}, catch_until{}, cooldown_until{}, hold_until{}, protect_until{}, count{}, hold_ticks{};
     std::atomic<std::uint32_t> from{}, to{};
+    std::atomic<std::uint64_t> skips{}, skip_ago{~0ull};
+    std::atomic<std::uint32_t> skip_from{}, skip_to{}, skip_why{};
 };
 DarkPop& dark_pop() { static auto* value = new DarkPop; return *value; }
 // The local skater this process published (even with No Bail off: the lease keeps its owner), checked
@@ -225,10 +227,29 @@ std::uint32_t dark_pop_override(std::uintptr_t selector, std::uint32_t current, 
         d.hold_ticks.fetch_add(1, std::memory_order_relaxed);
         return current;
     }
-    if (now >= d.held_until.load(std::memory_order_relaxed) || now < d.cooldown_until.load(std::memory_order_relaxed)) return kept;
-    if (d.require_catch.load(std::memory_order_relaxed) && now >= d.catch_until.load(std::memory_order_relaxed)) return kept;
+    // Only the landings the game would punish: a wipeout (300) or coming off the board (5xx). A clean
+    // landing is never turned into a pop. That is the dark catch's own signature: landing on the
+    // underside of the board is what makes the game bail, and the press turns that into a pop.
+    const bool failure = wanted == wipeout_physics_state || wanted >= 500;
+    const auto held_at = d.held_at.load(std::memory_order_relaxed);
+    std::uint32_t why = 0;
+    if (now >= d.held_until.load(std::memory_order_relaxed)) why |= 1;
+    if (now < d.cooldown_until.load(std::memory_order_relaxed)) why |= 2;
+    if (!failure) why |= 4;
+    if (d.require_catch.load(std::memory_order_relaxed) && now >= d.catch_until.load(std::memory_order_relaxed)) why |= 16;
     Owner owner;
-    if (!local_owner(selector, &Owner::selector, &owner)) return kept;
+    if (!why && !local_owner(selector, &Owner::selector, &owner)) why |= 8;
+    if (why) {
+        // Say so for every bail and for every landing the press was part of; a plain clean landing is not news.
+        if (failure || !(why & 1)) {
+            d.skip_from.store(current, std::memory_order_relaxed);
+            d.skip_to.store(wanted, std::memory_order_relaxed);
+            d.skip_why.store(why, std::memory_order_relaxed);
+            d.skip_ago.store(held_at ? now - held_at : ~0ull, std::memory_order_relaxed);
+            d.skips.fetch_add(1, std::memory_order_acq_rel);
+        }
+        return kept;
+    }
     // Protect from the bail this landing raised: now, and for the pop plus a moment after it.
     d.protect_until.store(now + 600, std::memory_order_relaxed);
     (void)cancel_wipeout_requests(owner.context);
@@ -449,13 +470,17 @@ void dark_pop_update(bool enabled, bool held, bool catching, bool require_catch)
     d.enabled.store(enabled, std::memory_order_relaxed);
     d.require_catch.store(require_catch, std::memory_order_relaxed);
     const auto now = GetTickCount64();
-    if (enabled && held) d.held_until.store(now + 150, std::memory_order_relaxed);
+    // A press counts if it was made up to 0.35 s before the flight ended, or is still down.
+    if (enabled && held) { d.held_until.store(now + 350, std::memory_order_relaxed); d.held_at.store(now, std::memory_order_relaxed); }
     if (enabled && catching) d.catch_until.store(now + 2500, std::memory_order_relaxed);
 }
 DarkPopLast dark_pop_last() noexcept {
     auto& d = dark_pop();
     return {d.count.load(std::memory_order_acquire), d.hold_ticks.load(std::memory_order_relaxed),
-            d.from.load(std::memory_order_relaxed), d.to.load(std::memory_order_relaxed)};
+            d.from.load(std::memory_order_relaxed), d.to.load(std::memory_order_relaxed),
+            d.skips.load(std::memory_order_acquire), d.skip_from.load(std::memory_order_relaxed),
+            d.skip_to.load(std::memory_order_relaxed), d.skip_why.load(std::memory_order_relaxed),
+            d.skip_ago.load(std::memory_order_relaxed)};
 }
 void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept {
     auto& w = state_watch();
