@@ -241,6 +241,23 @@ void presets_tab(SkateMenu &menu, const Model &model, const CallbacksV3 &callbac
     }
     end_card();
     trick_heights(menu, callbacks, p, view);
+    {
+        // Revert Boost: speed added when an unfinished spin is landed (an auto revert).
+        const auto &debug = model.debug;
+        begin_card(menu, "revert-boost", "REVERT BOOST", "Speed added each time you land an unfinished spin");
+        bool revert_on = debug.revert_boost;
+        if (toggle_row(menu, "Revert boost", "Land a spin a few degrees short of a half turn (an auto revert) to gain speed. Chain them to keep building it.",
+                revert_on, callbacks.queue_debug != nullptr))
+            debug_request(menu, callbacks, {DebugAction::set_revert_boost_enabled, revert_on});
+        ImGui::BeginDisabled(callbacks.queue_debug == nullptr);
+        field(menu, "Boost per revert");
+        float revert_speed = debug.revert_boost_speed;
+        if (ImGui::SliderFloat("##revert-boost-speed", &revert_speed, 0.5f, 15.0f, "+%.1f m/s", ImGuiSliderFlags_AlwaysClamp))
+            debug_request(menu, callbacks, {DebugAction::set_revert_boost_speed, false, revert_speed});
+        ImGui::EndDisabled();
+        note("1 m/s is 3.6 km/h. Reverts boosted so far this session are counted in the log.");
+        end_card();
+    }
     begin_card(menu, "presets", "PRESETS", "Switch any of them on and off; they stack");
     ImGui::BeginDisabled(!view.ready || !view.editable);
     const float button = ImGui::CalcTextSize("Turn off").x + ImGui::GetStyle().FramePadding.x * 2;

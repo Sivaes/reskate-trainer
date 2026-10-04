@@ -67,6 +67,8 @@ enum class DebugAction {
     set_first_person_spring_right,
     reset_first_person_arm,
     set_free_camera_fov,  // 0 = the game's own FOV
+    set_revert_boost_enabled,
+    set_revert_boost_speed,
     // Keep the last action in sync with the bound in request_scheduler.h.
 };
 
@@ -114,6 +116,10 @@ struct DebugModel {
     float camera_speed = 15.0f;
     float forward_velocity_speed = 20.0f;
     float up_velocity_speed = 20.0f;
+    // Revert Boost: a forward speed added when an unfinished spin is landed (an auto revert).
+    bool revert_boost = false;
+    float revert_boost_speed = 2.0f;
+    std::uint64_t revert_boost_count = 0;
     bool camera_position_valid = false;
     bool skater_position_valid = false;
     std::array<float, 3> camera_position{};
