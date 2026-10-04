@@ -131,6 +131,17 @@ struct InteractiveDebug {
     float forward_velocity_speed = 20.0f;
     std::uint64_t up_velocity_updates{};
     float up_velocity_speed = 20.0f;
+    // Revert Boost (see revert_boost_tick in client_debug.cpp).
+    bool revert_boost{};
+    float revert_boost_speed = 2.0f; // metres per second added along the direction of travel
+    std::uint64_t revert_boost_count{};
+    struct RevertTrack {
+        bool airborne{};
+        float yaw{}, spin{}; // radians: last facing, and the turn accumulated this jump
+        unsigned air_ticks{};
+        ULONGLONG cooldown_until{};
+        std::uint32_t last_state{};
+    } revert_track;
     float noclip_altitude{};
     bool noclip_altitude_valid{}, noclip_altitude_offboard{};
     // Player choices kept in the local profile (see load_saved_debug):

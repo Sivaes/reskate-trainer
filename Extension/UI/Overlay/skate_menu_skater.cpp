@@ -126,7 +126,15 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
     float up_velocity = debug.up_velocity_speed;
     if (ImGui::SliderFloat("##up-velocity", &up_velocity, 1.0f, 25.0f, "+%.1f", ImGuiSliderFlags_AlwaysClamp))
         debug_request(menu, callbacks, {DebugAction::set_up_velocity_speed, false, up_velocity});
+    field(menu, "Revert boost");
+    float revert_speed = debug.revert_boost_speed;
+    if (ImGui::SliderFloat("##revert-boost-speed", &revert_speed, 0.5f, 15.0f, "+%.1f m/s", ImGuiSliderFlags_AlwaysClamp))
+        debug_request(menu, callbacks, {DebugAction::set_revert_boost_speed, false, revert_speed});
     ImGui::EndDisabled();
+    bool revert_boost = debug.revert_boost;
+    if (toggle_row(menu, "Revert Boost", "Adds the speed above each time you land an unfinished spin (an auto revert). Chain them to build speed.",
+            revert_boost, callbacks.queue_debug != nullptr))
+        debug_request(menu, callbacks, {DebugAction::set_revert_boost_enabled, revert_boost});
     note("Controller: left stick moves, right stick looks, RT / LT rise and fall, click the left stick to boost.");
     note("Keyboard: WASD / Q E, Shift to boost. Close the menu to fly.");
     end_card();

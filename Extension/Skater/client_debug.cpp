@@ -10,6 +10,7 @@
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include <algorithm>
 #include <cmath>
 #include <optional>
 #include <utility>
@@ -58,6 +59,81 @@ std::array<float, 3> debug_position(SourceReader& reader, std::uintptr_t address
     for (std::size_t i = 0; i < 3; ++i)
         source_require(std::isfinite(row[i]) && std::abs(row[i]) <= 1000000.0f, "Position exceeds diagnostic bounds.");
     return {row[0], row[1], row[2]};
+}
+}
+// ---- Revert Boost -------------------------------------------------------------
+// When a jump's spin is landed a few degrees short of (or past) a half turn, the game's auto
+// revert finishes the turn. This adds a forward speed along the direction of travel at that
+// landing, through the same velocity boost the Forward Boost button uses.
+//
+// ASSUMPTION TO CHECK IN THE LOG: physics state numbers 100-199 are ground and 200-299 air
+// (the families no_bail.cpp calls "ground/air"). Every landing with a real spin is logged with
+// its state numbers so the ranges can be corrected from a play session.
+namespace {
+constexpr std::uint32_t revert_air_first = 200, revert_air_last = 299, revert_ground_first = 100;
+constexpr float revert_pi = 3.14159265f;
+constexpr float revert_min_spin = 90.0f;      // degrees turned in the air for a revert to count
+constexpr float revert_min_remainder = 3.0f;  // degrees short of / past a half turn: less is a clean landing
+constexpr float revert_max_remainder = 45.0f; // more is a different trick, not a revert
+constexpr float revert_max_speed = 40.0f;     // m/s (144 km/h): no boost above this
+constexpr unsigned revert_min_air_ticks = 4;
+void revert_boost_tick(InteractiveDebug& debug, std::uintptr_t client, std::uintptr_t entity,
+    const std::array<float, 16>& transform, const NoclipBodies& bodies, bool ready) {
+    auto& track = debug.revert_track;
+    SourceReader reader;
+    const auto physics_state = reader.value<std::uint32_t>(bodies.context, 0x1414);
+    const auto velocity = reader.value<std::array<float, 3>>(bodies.parts[0], 0x70);
+    reader.verify();
+    const bool air = physics_state >= revert_air_first && physics_state <= revert_air_last;
+    const float yaw = std::atan2(transform[8], transform[10]);
+    if (air) {
+        if (!track.airborne) {
+            const auto cooldown = track.cooldown_until;
+            track = {};
+            track.cooldown_until = cooldown;
+            track.airborne = true;
+        } else {
+            float delta = yaw - track.yaw;
+            if (delta > revert_pi) delta -= 2 * revert_pi;
+            else if (delta < -revert_pi) delta += 2 * revert_pi;
+            track.spin += delta;
+        }
+        ++track.air_ticks;
+        track.yaw = yaw;
+        track.last_state = physics_state;
+        return;
+    }
+    const bool landed = track.airborne;
+    const auto from_state = track.last_state;
+    track.airborne = false;
+    track.yaw = yaw;
+    track.last_state = physics_state;
+    if (!landed) return;
+    const float spin_degrees = std::abs(track.spin) * 180.0f / revert_pi;
+    float remainder = std::fmod(spin_degrees, 180.0f);
+    remainder = std::min(remainder, 180.0f - remainder);
+    const bool on_ground = physics_state >= revert_ground_first && physics_state < revert_air_first;
+    const bool unfinished = spin_degrees >= revert_min_spin && remainder >= revert_min_remainder &&
+        remainder <= revert_max_remainder;
+    const float speed = std::hypot(velocity[0], velocity[2]);
+    const auto now = GetTickCount64();
+    const bool allowed = debug.revert_boost && ready && session_boosts_allowed() &&
+        source_state().velocity_guard_active.load(std::memory_order_acquire) &&
+        !debug.noclip && !debug.park_editor && !bodies.offboard && !debug.forward_velocity.valid;
+    const bool fire = allowed && on_ground && unfinished && track.air_ticks >= revert_min_air_ticks &&
+        now >= track.cooldown_until && std::isfinite(speed) && speed >= 1.0f && speed <= revert_max_speed;
+    if (fire) {
+        const float scale = debug.revert_boost_speed / speed;
+        const std::array<float, 3> delta{velocity[0] * scale, 0.0f, velocity[2] * scale};
+        debug.forward_velocity = {client, entity, bodies.core, now + 1000, delta, true};
+        track.cooldown_until = now + 500;
+        ++debug.revert_boost_count;
+    }
+    if (spin_degrees >= 30.0f)
+        logging::log(logging::Level::info, logging::Channel::skater,
+            "Revert Boost: landed after {} air ticks, spin {:.0f} deg (remainder {:.0f}), state {}>{}, {:.1f} m/s{}",
+            track.air_ticks, spin_degrees, remainder, from_state, physics_state, speed,
+            fire ? ", BOOST" : unfinished ? (allowed ? ", no boost (not on ground / cooldown / speed)" : ", off") : "");
 }
 }
 std::array<float, 16> debug_skater(std::uintptr_t base, std::uintptr_t client, overlay::DebugModel& model) {
@@ -433,6 +509,19 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         debug.status = up ? "Up Boost speed updated." : "Forward Boost speed updated.";
         return;
     }
+    if (request.action == overlay::DebugAction::set_revert_boost_enabled) {
+        debug.revert_boost = request.enabled;
+        debug.revert_track = {};
+        debug.status = request.enabled ? "Revert Boost enabled." : "Revert Boost disabled.";
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_revert_boost_speed) {
+        source_require(std::isfinite(request.value) && request.value >= 0.5f && request.value <= 15.0f,
+            "Revert Boost speed must be between 0.5 and 15.");
+        debug.revert_boost_speed = request.value;
+        debug.status = "Revert Boost speed updated.";
+        return;
+    }
     if (request.action == overlay::DebugAction::restore_debug) {
         if (debug.save_pending) save_debug(debug);
         debug.first_person_settings = {};
@@ -768,7 +857,7 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         !state.velocity_guard_active.load(std::memory_order_acquire) ? "Up Boost is unavailable for this game build." :
         "Local skater physics could not be read.";
     try {
-        (void)debug_skater(base, client, model);
+        const auto skater_transform = debug_skater(base, client, model);
         const auto bodies = debug_noclip_bodies(base, client, model.skater_identity);
         if (debug.forward_velocity.valid && (GetTickCount64() >= debug.forward_velocity.expires ||
             debug.forward_velocity.entity != model.skater_identity || debug.forward_velocity.core != bodies.core)) {
@@ -798,6 +887,8 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         } else if (debug.up_velocity.valid) {
             model.up_velocity_unavailable = "Up Boost is being applied.";
         }
+        try { revert_boost_tick(debug, client, model.skater_identity, skater_transform, bodies, can_control); }
+        catch (...) { debug.revert_track = {}; }
         model.no_bail_available = can_control && update_no_bail(client, model.skater_identity, debug.no_bail && no_bail_allowed,
             debug.noclip && debug.noclip_velocity.valid, debug.noclip_velocity.expires);
         if (model.camera_available) {
@@ -848,6 +939,9 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     model.forward_velocity_updates = debug.forward_velocity_updates;
     model.up_velocity_speed = debug.up_velocity_speed;
     model.up_velocity_updates = debug.up_velocity_updates;
+    model.revert_boost = debug.revert_boost;
+    model.revert_boost_speed = debug.revert_boost_speed;
+    model.revert_boost_count = debug.revert_boost_count;
     return model;
 }
 bool restore_client_debug(std::uintptr_t base, std::uintptr_t client, bool camera_phase_observed) {
