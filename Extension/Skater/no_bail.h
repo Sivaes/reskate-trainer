@@ -38,6 +38,7 @@ struct DarkPopLast {
     std::uint64_t skips{};
     std::uint32_t skip_from{}, skip_to{}, skip_why{}; // why: bit 1 not held, 2 cooldown, 4 clean landing, 8 skater unknown, 16 no RB
     std::uint64_t skip_ago_ms{}; // how long before it D-pad Right was last held (UINT64_MAX: never)
+    std::uint64_t remounts{}; // times the skater was put back on its board after a pop (as if Y was pressed)
 };
 DarkPopLast dark_pop_last() noexcept;
 // Stopping flight must not discard the independent manual preference.

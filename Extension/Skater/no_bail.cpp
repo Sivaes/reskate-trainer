@@ -109,6 +109,7 @@ struct DarkPop {
     std::atomic<bool> enabled{}, require_catch{true};
     std::atomic<std::uint64_t> held_until{}, held_at{}, catch_until{}, cooldown_until{}, hold_until{}, protect_until{}, count{}, hold_ticks{};
     std::atomic<std::uint32_t> from{}, to{};
+    std::atomic<std::uint64_t> recover_until{}, off_since{}, remounts{};
     std::atomic<std::uint64_t> skips{}, skip_ago{~0ull};
     std::atomic<std::uint32_t> skip_from{}, skip_to{}, skip_why{};
 };
@@ -152,6 +153,15 @@ bool cancel_request(std::uintptr_t context, std::uintptr_t offset, LONG mask) no
     // even when another producer updates the same word.
     __try {
         _InterlockedAnd(reinterpret_cast<volatile LONG*>(address), ~mask);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool set_request(std::uintptr_t context, std::uintptr_t offset, LONG mask) noexcept {
+    const auto address = context + offset;
+    if (context < 0x10000 || context > highest - offset - sizeof(LONG) ||
+        (address & (alignof(LONG) - 1)) != 0) return false;
+    __try {
+        _InterlockedOr(reinterpret_cast<volatile LONG*>(address), mask);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
@@ -211,6 +221,24 @@ void hold_off_board(std::uintptr_t selector, std::uint32_t current) noexcept {
     (void)cancel_request(current_owner.context, animation_request_offset, mount_request_mask);
 }
 constexpr std::uint32_t dark_pop_state = 200;
+// After a pop the skater is sometimes left walking beside its board (state 504): the same thing pressing Y
+// fixes. For a few seconds after a pop, once the skater has stood off the board for a moment, set the
+// animation's mount request (context+13d4 bit 0x80, the one Y sets) once, so it hops back on by itself.
+void dark_pop_recover(std::uintptr_t selector, std::uint32_t current) noexcept {
+    auto& d = dark_pop();
+    if (current != offboard_physics_state) { d.off_since.store(0, std::memory_order_relaxed); return; }
+    if (!d.enabled.load(std::memory_order_relaxed) || !protection().mount_test) return;
+    const auto now = GetTickCount64();
+    if (now >= d.recover_until.load(std::memory_order_relaxed)) return;
+    const auto since = d.off_since.load(std::memory_order_relaxed);
+    if (!since) { d.off_since.store(now, std::memory_order_relaxed); return; }
+    if (now < since + 400) return;
+    Owner owner;
+    if (!local_owner(selector, &Owner::selector, &owner)) return;
+    d.recover_until.store(0, std::memory_order_relaxed);
+    if (set_request(owner.context, animation_request_offset, mount_request_mask))
+        d.remounts.fetch_add(1, std::memory_order_acq_rel);
+}
 // `wanted` is what the game chose and `kept` what No Bail would keep of it. The result is the pop
 // state when a held press meets the end of a flight, and `kept` otherwise.
 std::uint32_t dark_pop_override(std::uintptr_t selector, std::uint32_t current, std::uint32_t wanted, std::uint32_t kept) noexcept {
@@ -257,6 +285,9 @@ std::uint32_t dark_pop_override(std::uintptr_t selector, std::uint32_t current, 
     d.hold_until.store(now + 160, std::memory_order_relaxed);
     d.hold_ticks.store(0, std::memory_order_relaxed);
     d.cooldown_until.store(now + 1200, std::memory_order_relaxed);
+    d.held_until.store(0, std::memory_order_relaxed); // this press is spent: the next pop needs a new one
+    d.recover_until.store(now + 5000, std::memory_order_relaxed);
+    d.off_since.store(0, std::memory_order_relaxed);
     d.from.store(current, std::memory_order_relaxed);
     d.to.store(wanted, std::memory_order_relaxed);
     d.count.fetch_add(1, std::memory_order_acq_rel);
@@ -271,6 +302,10 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     // transitions can still run. Some contact tests return Wipeout directly;
     // retain the current state only for that result, never ordinary Offboard.
     const bool filtered = filter_requests(selector, &Owner::selector);
+    {
+        LastError error;
+        dark_pop_recover(selector, current);
+    }
     const auto next = protection().choose_original(selector, current);
     LastError error;
     const auto kept = filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
@@ -470,8 +505,8 @@ void dark_pop_update(bool enabled, bool held, bool catching, bool require_catch)
     d.enabled.store(enabled, std::memory_order_relaxed);
     d.require_catch.store(require_catch, std::memory_order_relaxed);
     const auto now = GetTickCount64();
-    // A press counts if it was made up to 0.35 s before the flight ended, or is still down.
-    if (enabled && held) { d.held_until.store(now + 350, std::memory_order_relaxed); d.held_at.store(now, std::memory_order_relaxed); }
+    // A press counts if it was made up to 1.5 s before the flight ended, or is still down (and is used up by one pop).
+    if (enabled && held) { d.held_until.store(now + 1500, std::memory_order_relaxed); d.held_at.store(now, std::memory_order_relaxed); }
     if (enabled && catching) d.catch_until.store(now + 2500, std::memory_order_relaxed);
 }
 DarkPopLast dark_pop_last() noexcept {
@@ -480,7 +515,7 @@ DarkPopLast dark_pop_last() noexcept {
             d.from.load(std::memory_order_relaxed), d.to.load(std::memory_order_relaxed),
             d.skips.load(std::memory_order_acquire), d.skip_from.load(std::memory_order_relaxed),
             d.skip_to.load(std::memory_order_relaxed), d.skip_why.load(std::memory_order_relaxed),
-            d.skip_ago.load(std::memory_order_relaxed)};
+            d.skip_ago.load(std::memory_order_relaxed), d.remounts.load(std::memory_order_acquire)};
 }
 void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept {
     auto& w = state_watch();

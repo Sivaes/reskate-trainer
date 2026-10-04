@@ -172,6 +172,11 @@ void dark_pop_tick(InteractiveDebug& debug, std::uintptr_t client, std::uintptr_
         logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop: flight ended (state {} -> {}), no pop: {}",
             last.skip_from, last.skip_to, why);
     }
+    if (last.remounts != debug.dark_pop_remounts_seen) {
+        debug.dark_pop_remounts_seen = last.remounts;
+        logging::write(logging::Level::info, logging::Channel::skater,
+            "Dark Pop: the skater was left off the board after the pop; asked the game to put it back on (as Y does)");
+    }
     if (last.count == debug.dark_pop_seen) return;
     debug.dark_pop_seen = last.count;
     debug.dark_pop_fired_at = GetTickCount64();
